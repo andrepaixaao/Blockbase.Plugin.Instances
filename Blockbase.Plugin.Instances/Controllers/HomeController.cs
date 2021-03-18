@@ -252,7 +252,6 @@ namespace Blockbase.Plugin.Instances.Controllers
         public void CreateTeste(IFormCollection data)
         {
             var a = Teste(data);
-            Create(a);
 
           
         }
@@ -280,7 +279,7 @@ namespace Blockbase.Plugin.Instances.Controllers
                 {
                     if (propform.Key == propmodel.Name)
                     {
-                        propmodel.SetValue(obj, propform.Value);
+                        propmodel.SetValue(obj, propform.Value.ToString());
                     }
                 }
             }
