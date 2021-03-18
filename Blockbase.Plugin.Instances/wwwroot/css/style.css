@@ -1,0 +1,57 @@
+﻿.input-instance {
+    width: 100%;
+    padding: 5px ;
+    margin: 5px 0;
+    display: inline-block;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+
+.form-instance {
+    display: flex;
+    flex-direction: column;
+    width:70%
+}
+
+
+.input-btn {
+    width: 50%;
+    background-color: #3d7eb6;
+    color: white;
+    padding: 14px 20px;
+    margin: auto;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+
+}
+
+p{
+    background-color:red;
+}
+
+
+.bar {
+    padding: 10px;
+    margin: 10px;
+    color: #333;
+    background: #fafafa;
+    border: 1px solid #ccc;
+    width:100%;
+}
+
+.error {
+    color: #ba3939;
+    background: #ffe0e0;
+    border: 1px solid #a33a3a;
+}
+
+i.ico {
+    display: inline-block;
+    width: 20px;
+    text-align: center;
+    font-style: normal;
+    font-weight: bold;
+}

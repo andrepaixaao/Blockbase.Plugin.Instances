@@ -1,0 +1,31 @@
+﻿@model FormViewModel
+@{
+    @if (@ViewBag.errorMessage!=null)
+    {
+    <div class="bar error">
+        <i class="ico">&#9747;</i> @ViewBag.errorMessage
+    </div>
+    }
+    ViewData["Title"] = Model.DisplayClassName;
+    var name = "New " + Model.DisplayClassName + " Setup";
+    <h2 name="Model.ClassName">@name</h2>
+    var sendData = "Create" + Model.ClassName;
+
+    <form asp-controller="Home" asp-action="Teste"  class="form-instance">
+        <div class="form-group">
+            @foreach (var i in Model.Inputs)
+            {
+
+                <label class="label-instance">@i.DisplayName</label>
+                <input name="@i.Name" value="" asp-for="@i.Name" type="@i.Type" class="input-instance" pattern="@i.Pattern" />
+            }
+            <input name="ClassName" type="hidden" asp-for="@Model.ClassName" />
+        </div>
+        <input type="submit" value="Create Instance" class="input-btn" />
+    </form>
+
+
+
+
+}
+
