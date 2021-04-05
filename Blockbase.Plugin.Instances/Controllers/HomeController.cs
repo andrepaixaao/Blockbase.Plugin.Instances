@@ -22,6 +22,7 @@ using System.Reflection;
 using System.Linq;
 using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Http;
+using Blockbase.Plugin.Instances.Properties;
 
 namespace Blockbase.Plugin.Instances.Controllers
 {
@@ -37,7 +38,8 @@ namespace Blockbase.Plugin.Instances.Controllers
         public IActionResult Index()
         {
             var test = new AzureModel();
-            return View(preencherForm(test));
+            var azureForm = FormViewModel.From(test);
+            return View(azureForm);
         }
 
         public IActionResult Privacy()
@@ -45,114 +47,124 @@ namespace Blockbase.Plugin.Instances.Controllers
             return View();
         }
 
-        public static FormViewModel preencherForm(object obj)
-        {
-            var list = new List<InputObjectModel>();
-            var DisplayClassName = (DisplayNameAttribute)obj.GetType().GetCustomAttributes(typeof(DisplayNameAttribute), true).FirstOrDefault();
-
-
-            foreach (var prop in obj.GetType().GetProperties())
-            {
-                PropertyInfo display = prop;
-                DisplayNameAttribute dp = display.GetCustomAttribute<DisplayNameAttribute>();
-                RegularExpressionAttribute reg = display.GetCustomAttribute<RegularExpressionAttribute>();
-                string type = "text";
-                if (prop.PropertyType == typeof(Int32)) type = "number";
-                list.Add(new InputObjectModel()
-                {
-                    Name = prop.Name,
-                    Type = type,
-                    DisplayName = dp.DisplayName,
-                    Pattern = reg.Pattern,
-                    Title = reg.ErrorMessage
-                });
-
-            }
-            return new FormViewModel() { Inputs = list, ClassName = obj.GetType().Name, DisplayClassName = DisplayClassName.DisplayName };
-
-        }
-
         [HttpPost]
-        public ViewResult Create(AmazonWebServiceModel aws)
+        public async Task<ViewResult> Create(IFormCollection form)
         {
-            try
+            var className = form["ClassName"];
+            var assemblies = AppDomain.CurrentDomain.GetAssemblies().Where(a => a.FullName.StartsWith("Blockbase"));
+            Type formType = null;
+            foreach (var assembly in assemblies)
             {
-                BasicAWSCredentials credentials = new BasicAWSCredentials(aws.AcessKey, aws.SecretKey);
-                var awsCon = new AmazonEC2Client(credentials, RegionEndpoint.USEast1);
-                string amiID = "ami-0472e9821a913b9b9";
-                string keyPairName = "Teste";
-                List<string> groups = new List<string>() { "sg-0f4b34f09a4cdb524" };
-                string subnetID = "subnet-f7cf54d6";
+                var type = assembly.DefinedTypes.FirstOrDefault(t => t.Name == className);
+                if (type == null) continue;
+                formType = type;
+                break;
+            }
 
-                var eni = new InstanceNetworkInterfaceSpecification()
-                {
-                    DeviceIndex = 0,
-                    SubnetId = subnetID,
-                    Groups = groups,
-                    AssociatePublicIpAddress = true
-                };
-                List<InstanceNetworkInterfaceSpecification> enis = new List<InstanceNetworkInterfaceSpecification>() { eni };
-
-                var launchRequest = new RunInstancesRequest()
-                {
-                    ImageId = amiID,
-                    InstanceType = "t2.micro",
-                    MinCount = 1,
-                    MaxCount = 1,
-                    KeyName = keyPairName,
-                    NetworkInterfaces = enis
-                };
-
-                awsCon.RunInstancesAsync(launchRequest);
-
-                ViewBag.errorMessage = "Instance initiated)";
-                return View("Index", preencherForm(aws));
+            if (formType == null)
+            {
+                ViewBag.ErrorMessage = "Class not found.";
+                return View("Index");
 
             }
-            catch (Exception e)
+            var obj = Activator.CreateInstance(formType);
+
+            foreach (var (formField, fieldValue) in form)
             {
-                ViewBag.errorMessage = "Instance failed ( Error: " + e.Message + " )";
-                return View("Index", preencherForm(aws));
+                foreach (var modelProperty in obj.GetType().GetProperties())
+                {
+                    if (formField == modelProperty.Name)
+                    {
+                        modelProperty.SetValue(obj, fieldValue.ToString());
+                    }
+                }
             }
+
+            var method = this.GetType().GetMethods()
+                .FirstOrDefault(x => x.Name == "CreateWithModel" && x.GetParameters().Any(p => p.ParameterType == obj.GetType()));
+
+            if (method == null)
+            {
+                ViewBag.ErrorMessage = " Method not found.";
+                return View("Index");
+
+            }
+
+
+            return await (Task<ViewResult>) method.Invoke(this, new[] { obj });
         }
 
-        public ViewResult Create(AzureModel azure)
+
+        public async Task<ViewResult> CreateWithModel(AmazonWebServiceModel model)
+        {
+            var instanceStartResult = StartAmazonElasticContainer2Instance(model);
+            if (!instanceStartResult.IsSuccessful)
+            {
+                ViewBag.ErrorMessage = instanceStartResult.ErrorMessage;
+            }
+            return View("Index", FormViewModel.From(model));
+        }
+
+        public async Task<ViewResult> CreateWithModel(AzureModel model)
+        {
+            var instanceStartResult = StartAzureInstance(model);
+            if (!instanceStartResult.IsSuccessful)
+            {
+                ViewBag.ErrorMessage = instanceStartResult.ErrorMessage;
+            }
+            return View("Index", FormViewModel.From(model));
+        }
+
+        public async Task<ViewResult> CreateWithModel(GoogleCloudModel model)
+        {
+            var instanceStartResult = await StartGoogleCloudInstance(model);
+            if (!instanceStartResult.IsSuccessful)
+            {
+                ViewBag.ErrorMessage = instanceStartResult.ErrorMessage;
+            }
+            return View("Index", FormViewModel.From(model));
+        }
+
+        #region Azure
+
+        private OperationResult StartAzureInstance(AzureModel model)
         {
             try
             {
                 string containerGroupName = SdkContext.RandomResourceName("blc-", 6);
                 string multiContainerGroupName = containerGroupName + "-multi";
-                string postgres = "andrepaixaao/postgres";
-                string mongo = "andrepaixaao/mongo";
-                string blockbase = "andrepaixaao/blockbase";
-                IAzure azureCon = GetAzureContext(azure);
-                if (azureCon.ResourceGroups.CheckExistence(azure.ResourceGroupName) == null)
+                string postgresImagePath = Resources.POSTGRES_IMAGE_PATH;
+                string mongoImagePath = Resources.MONGO_IMAGE_PATH;
+                string blockbaseImagePath = Resources.BLOCKBASE_IMAGE_PATH;
+                IAzure azureCon = GetAzureContext(model);
+                if (!azureCon.ResourceGroups.CheckExistence(model.ResourceGroupName))
                 {
-                    azureCon.ResourceGroups.Define(azure.ResourceGroupName).WithRegion(Microsoft.Azure.Management.ResourceManager.Fluent.Core.Region.USCentral).Create();
+                    azureCon.ResourceGroups.Define(model.ResourceGroupName).WithRegion(Microsoft.Azure.Management.ResourceManager.Fluent.Core.Region.USCentral).Create();
                 }
 
-                CreateContainerGroupMulti(azureCon, azure.ResourceGroupName, multiContainerGroupName, postgres, mongo, blockbase);
+                CreateContainerGroupMulti(azureCon, model.ResourceGroupName, multiContainerGroupName, postgresImagePath, mongoImagePath, blockbaseImagePath);
                 ViewBag.errorMessage = "Instance initiated";
-                return View("Index", preencherForm(azure));
+                return new OperationResult() { IsSuccessful = true };
             }
             catch (Exception e)
             {
-
-                ViewBag.errorMessage = "Instance failed ( Error: " + e.Message + " )";
-                return View("Index", preencherForm(azure));
+                return new OperationResult()
+                {
+                    IsSuccessful = false,
+                    ErrorMessage = $"Instance failed ( Error: {e.Message} )"
+                };
             }
-
         }
 
         private static IAzure GetAzureContext(AzureModel azure)
         {
-            IAzure azureCon;
+            IAzure azureContext;
 
             var credentials = new AzureCredentials(new ServicePrincipalLoginInformation { ClientId = azure.ClientId, ClientSecret = azure.ClientSecret }, azure.TenantId, AzureEnvironment.AzureGlobalCloud);
-            azureCon = Microsoft.Azure.Management.Fluent.Azure.Authenticate(credentials).WithDefaultSubscription();
-
-            return azureCon;
+            azureContext = Azure.Authenticate(credentials).WithDefaultSubscription();
+            return azureContext;
         }
+
         private static void CreateContainerGroupMulti(IAzure azure,
                                                       string resourceGroupName,
                                                       string containerGroupName,
@@ -160,11 +172,11 @@ namespace Blockbase.Plugin.Instances.Controllers
                                                       string containerImage2, string containerImage3)
         {
             IResourceGroup resGroup = azure.ResourceGroups.GetByName(resourceGroupName);
-            Microsoft.Azure.Management.ResourceManager.Fluent.Core.Region azureRegion = resGroup.Region;
-            var postgresEnviromentVariables = new Dictionary<string, string>();
-            postgresEnviromentVariables.Add("POSTGRES_PASSWORD", "yourpassword");
-            postgresEnviromentVariables.Add("POSTGRES_USER", "postgres");
-            var containerGroup = azure.ContainerGroups.Define(containerGroupName)
+            var azureRegion = resGroup.Region;
+            var postgresEnvironmentVariables = new Dictionary<string, string>();
+            postgresEnvironmentVariables.Add("POSTGRES_PASSWORD", Resources.POSTGRES_PASSWORD);
+            postgresEnvironmentVariables.Add("POSTGRES_USER", Resources.POSTGRES_USER);
+            azure.ContainerGroups.Define(containerGroupName)
                 .WithRegion(azureRegion)
                 .WithExistingResourceGroup(resourceGroupName)
                 .WithLinux()
@@ -175,7 +187,7 @@ namespace Blockbase.Plugin.Instances.Controllers
                     .WithExternalTcpPort(80)
                     .WithCpuCoreCount(0.5)
                     .WithMemorySizeInGB(1)
-                    .WithEnvironmentVariables(postgresEnviromentVariables)
+                    .WithEnvironmentVariables(postgresEnvironmentVariables)
                     .Attach()
                 .DefineContainerInstance(containerGroupName + "-2")
                     .WithImage(containerImage2)
@@ -188,57 +200,106 @@ namespace Blockbase.Plugin.Instances.Controllers
                     .WithoutPorts()
                     .WithCpuCoreCount(0.5)
                     .WithMemorySizeInGB(1)
-
                     .Attach()
                 .WithDnsPrefix(containerGroupName)
                 .Create();
         }
 
-        public async Task<ViewResult> Create( GoogleCloudModel google)
+        #endregion
+
+        #region Amazon EC2
+        private OperationResult StartAmazonElasticContainer2Instance(AmazonWebServiceModel model)
         {
             try
             {
+                BasicAWSCredentials credentials = new BasicAWSCredentials(model.AcessKey, model.SecretKey);
+                var awsConnection = new AmazonEC2Client(credentials, RegionEndpoint.USEast1);
+                var amazonImageId = "ami-0472e9821a913b9b9";
+                var keyPairName = "Teste";
+                var groups = new List<string>() { "sg-0f4b34f09a4cdb524" };
+                var subnetId = "subnet-f7cf54d6";
 
-
-                ComputeService computeService = new ComputeService(new BaseClientService.Initializer
+                var elasticNetworkInterfaces = new List<InstanceNetworkInterfaceSpecification>()
                 {
-                    HttpClientInitializer = await GetCredential(google),
-                    ApplicationName = "Blockbase",
-                });
+                    new InstanceNetworkInterfaceSpecification()
+                    {
+                        DeviceIndex = 0,
+                        SubnetId = subnetId,
+                        Groups = groups,
+                        AssociatePublicIpAddress = true
+                    }
+                };
 
-                string name = SdkContext.RandomResourceName("blockbase-", 2);
 
-                string zone = "us-central1-a";
+                var launchRequest = new RunInstancesRequest()
+                {
+                    ImageId = amazonImageId,
+                    InstanceType = "t2.micro",
+                    MinCount = 1,
+                    MaxCount = 1,
+                    KeyName = keyPairName,
+                    NetworkInterfaces = elasticNetworkInterfaces
+                };
 
-                var requestBody = Newtonsoft.Json.JsonConvert.DeserializeObject<Google.Apis.Compute.v1.Data.Instance>("{  \"kind\": \"compute#instance\" ,  \"zone\": \"projects/blockbase/zones/us-central1-a\",  \"machineType\": \"projects/blockbase/zones/us-central1-a/machineTypes/e2-medium\",  \"displayDevice\": {    \"enableDisplay\": false  },  \"metadata\": {    \"kind\": \"compute#metadata\",    \"items\": []  },  \"tags\": {    \"items\": [      \"http-server\",      \"https-server\"    ]  },  \"disks\": [    {      \"kind\": \"compute#attachedDisk\",      \"type\": \"PERSISTENT\",      \"boot\": true,      \"mode\": \"READ_WRITE\",      \"autoDelete\": true,      \"deviceName\": \"instance-1\",      \"initializeParams\": {        \"sourceImage\": \"projects/blockbase/global/images/blockbase\",        \"diskType\": \"projects/blockbase/zones/us-central1-a/diskTypes/pd-balanced\",        \"diskSizeGb\": \"20\",        \"labels\": {}      },      \"diskEncryptionKey\": {}    }  ],  \"canIpForward\": false,  \"networkInterfaces\": [    {      \"kind\": \"compute#networkInterface\",      \"subnetwork\": \"projects/blockbase/regions/us-central1/subnetworks/default\",      \"accessConfigs\": [        {          \"kind\": \"compute#accessConfig\",          \"name\": \"External NAT\",          \"type\": \"ONE_TO_ONE_NAT\",          \"networkTier\": \"PREMIUM\"        }      ],      \"aliasIpRanges\": []    }  ],  \"description\": \"\",  \"labels\": {},  \"scheduling\": {    \"preemptible\": false,    \"onHostMaintenance\": \"MIGRATE\",    \"automaticRestart\": true,    \"nodeAffinities\": []  },  \"deletionProtection\": false,  \"reservationAffinity\": {    \"consumeReservationType\": \"ANY_RESERVATION\"  },  \"serviceAccounts\": [    {      \"email\": \"867652000955-compute@developer.gserviceaccount.com\",      \"scopes\": [        \"https://www.googleapis.com/auth/cloud-platform\"      ]    }  ],\"shieldedInstanceConfig\": {    \"enableSecureBoot\": false,    \"enableVtpm\": true,    \"enableIntegrityMonitoring\": true  },  \"confidentialInstanceConfig\": {    \"enableConfidentialCompute\": false  }}");
-                requestBody.Name = name;
-
-                InstancesResource.InsertRequest request = computeService.Instances.Insert(requestBody, google.ProjectId, zone);
-
-                Google.Apis.Compute.v1.Data.Operation response = request.Execute();
-
-                ViewBag.resultado = "Instance initiated";
-
-                return View("Index", preencherForm(google));
-
+                awsConnection.RunInstancesAsync(launchRequest);
+                ViewBag.errorMessage = "Instance initiated";
+                return new OperationResult() { IsSuccessful = true };
             }
             catch (Exception e)
             {
-                ViewBag.errorMessage = "Instance failed ( Error: " + e.Message + " )";
-                return View("Index", preencherForm(google));
+                return new OperationResult()
+                {
+                    IsSuccessful = false,
+                    ErrorMessage = $"Instance failed ( Error: {e.Message} )"
+                };
             }
 
-
         }
-        public static async Task<GoogleCredential> GetCredential(GoogleCloudModel obj)
+
+        #endregion
+
+        #region Google Platform
+        private async Task<OperationResult> StartGoogleCloudInstance(GoogleCloudModel model)
         {
-            obj.PrivateKey = Regex.Replace(obj.PrivateKey, @"\\n", "");
+            try
+            {
+                var computeService = new ComputeService(new BaseClientService.Initializer
+                {
+                    HttpClientInitializer = await GetCredential(model),
+                    ApplicationName = "Blockbase",
+                });
+
+                var name = SdkContext.RandomResourceName("blockbase-", 2);
+
+                var zone = "us-central1-a";
+
+                var requestBody = JsonConvert.DeserializeObject<Google.Apis.Compute.v1.Data.Instance>(Resources.GOOGLE_REQUEST_BODY);
+                requestBody.Name = name;
+
+                var request = computeService.Instances.Insert(requestBody, model.ProjectId, zone);
+
+                var response = request.Execute();
+                return new OperationResult() { IsSuccessful = true };
+            }
+            catch (Exception e)
+            {
+                return new OperationResult()
+                {
+                    IsSuccessful = false,
+                    ErrorMessage = $"Instance failed ( Error: {e.Message} )"
+                };
+            }
+        }
+
+        public static async Task<GoogleCredential> GetCredential(GoogleCloudModel model)
+        {
+            model.PrivateKey = Regex.Replace(model.PrivateKey, @"\\n", "");
 
 
-            string credentialsJson = JsonConvert.SerializeObject(obj);
+            var credentialsJson = JsonConvert.SerializeObject(model);
 
             {
-                GoogleCredential credential = await Task.Run(() => GoogleCredential.FromJson(credentialsJson));
+                var credential = await Task.Run(() => GoogleCredential.FromJson(credentialsJson));
                 if (credential.IsCreateScopedRequired)
                 {
                     credential = credential.CreateScoped("https://www.googleapis.com/auth/cloud-platform");
@@ -246,50 +307,7 @@ namespace Blockbase.Plugin.Instances.Controllers
                 return credential;
             }
         }
-
-
-
-        public void CreateTeste(IFormCollection data)
-        {
-            var a = Teste(data);
-
-          
-        }
-
-        public Object Teste(IFormCollection data)
-        {
-            Type a = null;
-            
-            string className = (string)data["ClassName"];
-            var assemblies = AppDomain.CurrentDomain.GetAssemblies().Where(a=> a.FullName.StartsWith("Blockbase"));
-            foreach(var assembly in assemblies)
-            {
-                var type = assembly.DefinedTypes.FirstOrDefault(t=> t.Name==className);
-                if(type!=null)
-                {
-                    a = type;
-                }
-
-            }
-            var obj = Activator.CreateInstance(a);
-           
-            foreach(var propform in data)
-            {
-                foreach (var propmodel in obj.GetType().GetProperties())
-                {
-                    if (propform.Key == propmodel.Name)
-                    {
-                        propmodel.SetValue(obj, propform.Value.ToString());
-                    }
-                }
-            }
-            
-            return  obj;
-
-        }
-
-
-
+        #endregion
 
     }
 }
